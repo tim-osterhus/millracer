@@ -121,6 +121,28 @@ The JSON input accepts `task`, `prompt`, or `instructions`, plus an optional
 `workspace`. The JSON output includes the selected route, decision metadata,
 warnings, Millrace event data, task path, status payload, and final answer.
 
+Adapters for streaming queues should pass exactly one selected item at a time
+using `scoped_work_item`:
+
+```json
+{
+  "task": "Implement the selected queue item only.",
+  "workspace": "/path/to/workspace",
+  "scoped_work_item": {
+    "item_id": "ITEM-123",
+    "title": "Fix the selected failure",
+    "source_queue": "/path/to/TASK_QUEUE.md",
+    "spec_path": "/path/to/specs/ITEM-123.md",
+    "completion_ref": "submit-ITEM-123",
+    "constraints": ["Do not implement or submit any other queue item."]
+  }
+}
+```
+
+Millracer writes this metadata into the Millrace intake task as the scoped-work
+contract. The delegated agent is told not to batch independent queue items and
+not to create completion signals for any item other than the selected one.
+
 ## Common Options
 
 - `--route auto|direct|millrace`: let Pi choose, force direct work, or force
@@ -136,6 +158,8 @@ warnings, Millrace event data, task path, status payload, and final answer.
 - `--skill <path>`: load a Millrace operator skill package or `SKILL.md`.
 - `--no-default-skills`: disable automatic skill discovery.
 - `--daemon-timeout-seconds <n>`: maximum wait for a delegated Millrace run.
+- `--max-daemon-restarts <n>`: restart attempts after Millracer sees queued
+  work with a stopped daemon, default `1`.
 - `--output json`: machine-readable one-shot output.
 
 ## Skill Loading
@@ -200,14 +224,24 @@ The outer Pi session remains persistent across the decision, daemon-completion
 notification, and finalization turns, and `operator` keeps it alive across
 multiple tasks.
 
-Millracer also does not automatically retry crashed or blocked Millrace runs or
-fall back to direct execution. It reports those events to the final Pi turn so
-benchmark output reflects the real delegated run rather than hiding failures.
+Millracer does not automatically retry blocked Millrace runs or fall back to
+direct execution. It reports those events to the final Pi turn so benchmark
+output reflects the real delegated run rather than hiding failures.
+
+If Millracer sees queued work while the daemon is stopped, it classifies that
+as `restart_needed`, clears stale Millrace state when needed, and restarts the
+daemon up to `--max-daemon-restarts`. This is a lifecycle repair only; it does
+not change the queued task or silently switch to direct execution.
 
 For delegated tasks, Millracer writes an intake task under `.millracer/intake/`
 and passes that file to `millrace queue add-task`. Millrace accepts arbitrary
 readable task markdown paths there and copies the parsed document into its
 managed queue.
+
+For dynamic benchmark queues, the adapter should select one available item,
+load that item's spec, and call Millracer with `scoped_work_item`. Do not pass a
+whole continuous-agent operating prompt as one broad task unless broad batching
+is explicitly the item being measured.
 
 The current finalization turn combines two jobs: notification that a daemon
 finished and production of the benchmark-facing answer. The `MonitorEvent`

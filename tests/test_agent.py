@@ -28,12 +28,16 @@ class FakeMillrace:
     def validate(self) -> None:
         self.calls.append("validate")
 
-    def enqueue_task(self, task: str) -> Path:
+    def enqueue_task(self, task: str, scoped_work_item=None) -> Path:  # noqa: ANN001
         self.calls.append(f"enqueue:{task}")
         return Path("/tmp/ws/.millracer/intake/task.md")
 
     def start_daemon(self):  # noqa: ANN201
         self.calls.append("start_daemon")
+        return object()
+
+    def restart_daemon(self):  # noqa: ANN201
+        self.calls.append("restart_daemon")
         return object()
 
     def stop_daemon(self) -> None:
@@ -107,3 +111,47 @@ def test_agent_warns_when_decision_requests_custom_loop() -> None:
 
     assert result.warnings
     assert "custom Millrace loop" in result.warnings[0]
+
+
+def test_agent_restarts_daemon_when_monitor_reports_restart_needed() -> None:
+    class RestartMonitor:
+        def __init__(self) -> None:
+            self.events = [
+                MonitorEvent(
+                    kind="restart_needed",
+                    workspace="/tmp/ws",
+                    reason="daemon stopped with queued work",
+                ),
+                MonitorEvent(
+                    kind="complete",
+                    workspace="/tmp/ws",
+                    reason="daemon idle with no work",
+                ),
+            ]
+
+        def wait(self, *, timeout_seconds: float) -> MonitorEvent:
+            return self.events.pop(0)
+
+    pi = FakePi()
+    millrace = FakeMillrace()
+    agent = MillracerAgent(pi=pi, millrace=millrace, monitor=RestartMonitor())
+
+    result = agent.run(
+        "Process one scoped queue item",
+        options=RunOptions(workspace=Path("/tmp/ws"), cwd=Path("/tmp/ws"), route="millrace"),
+    )
+
+    assert result.event == MonitorEvent(
+        kind="complete",
+        workspace="/tmp/ws",
+        reason="daemon idle with no work",
+    )
+    assert millrace.calls == [
+        "initialize",
+        "validate",
+        "enqueue:Process one scoped queue item",
+        "start_daemon",
+        "restart_daemon",
+        "stop_daemon",
+        "status",
+    ]

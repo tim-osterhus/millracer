@@ -8,12 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from millracer.agent import RunResult
+from millracer.scope import ScopedWorkItem
 
 
 @dataclass(frozen=True, slots=True)
 class BenchmarkRequest:
     task: str
     workspace: Path | None = None
+    scoped_work_item: ScopedWorkItem | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -28,9 +30,16 @@ def parse_benchmark_request(raw: str) -> BenchmarkRequest:
         )
     workspace = payload.get("workspace")
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    scoped_payload = (
+        payload.get("scoped_work_item")
+        or payload.get("work_item")
+        or payload.get("scope")
+        or metadata.get("scoped_work_item")
+    )
     return BenchmarkRequest(
         task=task,
         workspace=Path(workspace) if isinstance(workspace, str) and workspace else None,
+        scoped_work_item=ScopedWorkItem.from_payload(scoped_payload),
         metadata=metadata,
     )
 

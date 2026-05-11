@@ -13,6 +13,7 @@ from millracer.monitor import DaemonMonitor
 from millracer.operator import MillracerOperator
 from millracer.pi import PiConfig, PiHarness, discover_default_skill_paths
 from millracer.pi_rpc import PiRpcHarness
+from millracer.scope import ScopedWorkItem
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
 def _run_once(args: argparse.Namespace) -> int:
     pi = None
     try:
-        task, workspace = _task_and_workspace(args)
+        task, workspace, scoped_work_item = _task_workspace_and_scope(args)
         cwd = Path(args.cwd or workspace).expanduser().resolve()
         workspace = workspace.expanduser().resolve()
         pi, agent = _build_agent(args, workspace=workspace, cwd=cwd)
@@ -43,6 +44,8 @@ def _run_once(args: argparse.Namespace) -> int:
                 daemon_timeout_seconds=args.daemon_timeout_seconds,
                 pi_timeout_seconds=args.pi_timeout_seconds,
                 keep_daemon=args.keep_daemon,
+                scoped_work_item=scoped_work_item,
+                max_daemon_restarts=args.max_daemon_restarts,
             ),
         )
     except Exception as exc:  # pragma: no cover - user-facing CLI boundary
@@ -75,6 +78,7 @@ def _run_operator(args: argparse.Namespace) -> int:
             daemon_timeout_seconds=args.daemon_timeout_seconds,
             pi_timeout_seconds=args.pi_timeout_seconds,
             keep_daemon=args.keep_daemon,
+            max_daemon_restarts=args.max_daemon_restarts,
         )
         print("Millracer operator ready. Type /exit to quit.", file=sys.stderr)
         while True:
@@ -163,6 +167,7 @@ def _add_common_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--no-default-skills", action="store_true")
     command.add_argument("--poll-interval-seconds", type=float, default=2.0)
     command.add_argument("--daemon-timeout-seconds", type=float, default=7200.0)
+    command.add_argument("--max-daemon-restarts", type=int, default=1)
     command.add_argument("--pi-timeout-seconds", type=int, default=None)
     command.add_argument("--keep-daemon", action="store_true")
 
@@ -189,17 +194,17 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _task_and_workspace(args: argparse.Namespace) -> tuple[str, Path]:
+def _task_workspace_and_scope(args: argparse.Namespace) -> tuple[str, Path, ScopedWorkItem | None]:
     if args.benchmark_json:
         request = parse_benchmark_request(sys.stdin.read())
         workspace = request.workspace or args.workspace
-        return request.task, workspace
+        return request.task, workspace, request.scoped_work_item
     task = " ".join(args.task).strip()
     if not task:
         task = sys.stdin.read().strip()
     if not task:
         raise ValueError("task text is required")
-    return task, args.workspace
+    return task, args.workspace, None
 
 
 if __name__ == "__main__":  # pragma: no cover

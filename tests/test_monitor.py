@@ -62,7 +62,32 @@ def test_classify_status_detects_running_daemon_with_drained_work() -> None:
         }
     )
 
-    assert event == MonitorEvent(kind="complete", workspace="/tmp/ws", reason="daemon idle with no work")
+    assert event == MonitorEvent(
+        kind="complete",
+        workspace="/tmp/ws",
+        reason="daemon idle with no work",
+    )
+
+
+def test_classify_status_detects_stopped_daemon_with_queued_work() -> None:
+    event = classify_status(
+        {
+            "workspace": "/tmp/ws",
+            "process_running": False,
+            "active_stage": "none",
+            "active_run_count": 0,
+            "execution_queue_depth": 1,
+            "planning_queue_depth": 0,
+            "learning_queue_depth": 0,
+            "runtime_ownership_lock": "stale",
+        }
+    )
+
+    assert event == MonitorEvent(
+        kind="restart_needed",
+        workspace="/tmp/ws",
+        reason="daemon stopped with queued work and stale runtime ownership lock",
+    )
 
 
 def test_monitor_wait_returns_first_terminal_event() -> None:

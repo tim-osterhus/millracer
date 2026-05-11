@@ -10,6 +10,7 @@ from typing import Protocol
 from millracer.decision import Decision, parse_decision
 from millracer.monitor import MonitorEvent
 from millracer.prompts import decision_prompt, direct_prompt, finalization_prompt
+from millracer.scope import ScopedWorkItem
 
 
 class PiLike(Protocol):
@@ -21,9 +22,11 @@ class MillraceLike(Protocol):
 
     def validate(self) -> None: ...
 
-    def enqueue_task(self, task: str) -> Path: ...
+    def enqueue_task(self, task: str, scoped_work_item: ScopedWorkItem | None = None) -> Path: ...
 
     def start_daemon(self): ...
+
+    def restart_daemon(self): ...
 
     def stop_daemon(self) -> None: ...
 
@@ -42,6 +45,8 @@ class RunOptions:
     daemon_timeout_seconds: float = 7200.0
     pi_timeout_seconds: int | None = None
     keep_daemon: bool = False
+    scoped_work_item: ScopedWorkItem | None = None
+    max_daemon_restarts: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +58,7 @@ class RunResult:
     task_path: Path | None = None
     status: dict[str, object] | None = None
     warnings: tuple[str, ...] = ()
+    scoped_work_item: ScopedWorkItem | None = None
 
     def to_jsonable(self) -> dict[str, object]:
         return {
@@ -77,6 +83,9 @@ class RunResult:
             "task_path": None if self.task_path is None else str(self.task_path),
             "status": self.status,
             "warnings": list(self.warnings),
+            "scoped_work_item": None
+            if self.scoped_work_item is None
+            else self.scoped_work_item.to_jsonable(),
         }
 
 
@@ -100,6 +109,7 @@ class MillracerAgent:
                 decision=decision,
                 output=output,
                 warnings=warnings,
+                scoped_work_item=options.scoped_work_item,
             )
 
         set_mode = getattr(self.millrace, "set_mode", None)
@@ -107,9 +117,9 @@ class MillracerAgent:
             set_mode(decision.mode)
         self.millrace.initialize()
         self.millrace.validate()
-        task_path = self.millrace.enqueue_task(task)
+        task_path = self.millrace.enqueue_task(task, scoped_work_item=options.scoped_work_item)
         self.millrace.start_daemon()
-        event = self.monitor.wait(timeout_seconds=options.daemon_timeout_seconds)
+        event = self._wait_for_terminal_event(options=options)
         if not options.keep_daemon:
             self.millrace.stop_daemon()
         status = self.millrace.status()
@@ -133,6 +143,7 @@ class MillracerAgent:
             task_path=task_path,
             status=status,
             warnings=warnings,
+            scoped_work_item=options.scoped_work_item,
         )
 
     def _decision_for(self, task: str, *, options: RunOptions) -> Decision:
@@ -145,6 +156,17 @@ class MillracerAgent:
             timeout_seconds=options.pi_timeout_seconds,
         )
         return parse_decision(raw_decision)
+
+    def _wait_for_terminal_event(self, *, options: RunOptions) -> MonitorEvent:
+        restarts = 0
+        while True:
+            event = self.monitor.wait(timeout_seconds=options.daemon_timeout_seconds)
+            if event.kind != "restart_needed":
+                return event
+            if restarts >= options.max_daemon_restarts:
+                return event
+            self.millrace.restart_daemon()
+            restarts += 1
 
 
 def _warnings_for_decision(decision: Decision) -> tuple[str, ...]:

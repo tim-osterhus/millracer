@@ -45,6 +45,14 @@ def test_pi_harness_injects_prompt_skills_and_thinking() -> None:
     assert executor.args[-1] == "hello"
 
 
+def test_pi_harness_system_prompt_warns_against_queue_batching() -> None:
+    command = PiHarness(config=PiConfig()).build_command("hello")
+    system_prompt = command[command.index("--append-system-prompt") + 1]
+
+    assert "Do not batch independent queue items" in system_prompt
+    assert "one scoped work item" in system_prompt
+
+
 def test_pi_rpc_command_uses_persistent_rpc_mode() -> None:
     command = build_rpc_command(
         PiConfig(

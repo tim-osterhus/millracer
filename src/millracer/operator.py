@@ -25,6 +25,7 @@ class MillracerOperator:
     daemon_timeout_seconds: float = 7200.0
     pi_timeout_seconds: int | None = None
     keep_daemon: bool = False
+    max_daemon_restarts: int = 1
 
     def handle(self, task: str) -> RunResult:
         return self.agent.run(
@@ -36,6 +37,7 @@ class MillracerOperator:
                 daemon_timeout_seconds=self.daemon_timeout_seconds,
                 pi_timeout_seconds=self.pi_timeout_seconds,
                 keep_daemon=self.keep_daemon,
+                max_daemon_restarts=self.max_daemon_restarts,
             ),
         )
 

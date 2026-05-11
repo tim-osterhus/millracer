@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from millracer.command import CommandExecutor, ProcessHandle, SubprocessExecutor, require_success
+from millracer.scope import ScopedWorkItem
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,8 +56,8 @@ class MillraceController:
             )
         )
 
-    def enqueue_task(self, task: str) -> Path:
-        task_path = self._write_task_file(task)
+    def enqueue_task(self, task: str, scoped_work_item: ScopedWorkItem | None = None) -> Path:
+        task_path = self._write_task_file(task, scoped_work_item=scoped_work_item)
         require_success(
             self.executor.run(
                 (
@@ -72,6 +74,7 @@ class MillraceController:
         return task_path
 
     def start_daemon(self) -> ProcessHandle:
+        self.clear_stale_state_if_needed()
         self._daemon = self.executor.start(
             (
                 self.config.command,
@@ -88,6 +91,9 @@ class MillraceController:
         )
         return self._daemon
 
+    def restart_daemon(self) -> ProcessHandle:
+        return self.start_daemon()
+
     def stop_daemon(self) -> None:
         require_success(
             self.executor.run(
@@ -95,9 +101,32 @@ class MillraceController:
                 cwd=self.cwd or self.workspace,
             )
         )
-        if self._daemon is not None and self._daemon.poll() is None:
-            with suppress(ProcessLookupError):
-                self._daemon.terminate()
+        self._wait_for_daemon_exit()
+        self.clear_stale_state_if_needed()
+
+    def clear_stale_state_if_needed(self) -> bool:
+        try:
+            payload = self.status()
+        except Exception:
+            return False
+        if payload.get("runtime_ownership_lock") != "stale":
+            return False
+        self.clear_stale_state()
+        return True
+
+    def clear_stale_state(self) -> None:
+        require_success(
+            self.executor.run(
+                (
+                    self.config.command,
+                    "control",
+                    "clear-stale-state",
+                    "--workspace",
+                    str(self.workspace),
+                ),
+                cwd=self.cwd or self.workspace,
+            )
+        )
 
     def status(self) -> dict[str, Any]:
         result = require_success(
@@ -118,7 +147,32 @@ class MillraceController:
             raise ValueError("millrace status JSON must be an object")
         return payload
 
-    def _write_task_file(self, task: str) -> Path:
+    def _wait_for_daemon_exit(self) -> None:
+        if self._daemon is None or self._daemon.poll() is not None:
+            return
+        try:
+            self._daemon.wait(timeout=30.0)
+            return
+        except (TimeoutError, subprocess.TimeoutExpired):
+            pass
+        with suppress(ProcessLookupError):
+            self._daemon.terminate()
+        try:
+            self._daemon.wait(timeout=5.0)
+            return
+        except (TimeoutError, subprocess.TimeoutExpired):
+            pass
+        with suppress(ProcessLookupError):
+            self._daemon.kill()
+        with suppress(TimeoutError, subprocess.TimeoutExpired):
+            self._daemon.wait(timeout=5.0)
+
+    def _write_task_file(
+        self,
+        task: str,
+        *,
+        scoped_work_item: ScopedWorkItem | None = None,
+    ) -> Path:
         now = datetime.now(UTC)
         task_id = _task_id(task, now)
         intake_dir = self.workspace / ".millracer" / "intake"
@@ -130,6 +184,7 @@ class MillraceController:
                 title=_title_from_task(task),
                 summary=task.strip(),
                 created_at=now.isoformat(),
+                scoped_work_item=scoped_work_item,
             ),
             encoding="utf-8",
         )
@@ -142,7 +197,9 @@ def render_task_document(
     title: str,
     summary: str,
     created_at: str,
+    scoped_work_item: ScopedWorkItem | None = None,
 ) -> str:
+    scoped_work = _render_scoped_work(scoped_work_item)
     return f"""\
 # {title}
 
@@ -152,17 +209,27 @@ Summary: {summary}
 Created-At: {created_at}
 Created-By: millracer
 
+{scoped_work}
 Target-Paths:
 - .
 
 Acceptance:
 - Complete the requested benchmark task or report the concrete blocker.
+- If this task came from an external queue, complete only the selected scoped work item.
 
 Required-Checks:
 - Run the relevant verification for the changed work, or explain why no check was possible.
 
 References:
 - queued by Millracer
+
+Scope Contract:
+- Treat this document as one scoped work item.
+- Do not batch independent queue items into this work item.
+- Do not create completion markers, commits, tags, or external signals for any
+  work item other than the scoped item named here.
+- If the prompt describes a streaming queue but does not identify one selected
+  item, report the missing scope instead of processing the whole queue.
 
 Risk:
 - Benchmark adapter task may need follow-up inspection by the outer Millracer agent.
@@ -181,3 +248,23 @@ def _title_from_task(task: str) -> str:
 def _slug(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "task"
+
+
+def _render_scoped_work(scoped_work_item: ScopedWorkItem | None) -> str:
+    if scoped_work_item is None:
+        return "Scoped-Work:\n- Item-ID: none\n"
+    lines = [
+        "Scoped-Work:",
+        f"- Item-ID: {scoped_work_item.item_id}",
+    ]
+    if scoped_work_item.title:
+        lines.append(f"- Title: {scoped_work_item.title}")
+    if scoped_work_item.source_queue:
+        lines.append(f"- Source-Queue: {scoped_work_item.source_queue}")
+    if scoped_work_item.spec_path:
+        lines.append(f"- Spec-Path: {scoped_work_item.spec_path}")
+    if scoped_work_item.completion_ref:
+        lines.append(f"- Completion-Ref: {scoped_work_item.completion_ref}")
+    for constraint in scoped_work_item.constraints:
+        lines.append(f"- Constraint: {constraint}")
+    return "\n".join(lines) + "\n"

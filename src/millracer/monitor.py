@@ -25,6 +25,13 @@ def classify_status(payload: dict[str, Any]) -> MonitorEvent | None:
             reason=str(failure_class or "blocked idle"),
         )
 
+    if payload.get("process_running") is False and _queued_work(payload) > 0:
+        stale = payload.get("runtime_ownership_lock") == "stale"
+        reason = "daemon stopped with queued work"
+        if stale:
+            reason += " and stale runtime ownership lock"
+        return MonitorEvent(kind="restart_needed", workspace=workspace, reason=reason)
+
     planning_marker = str(payload.get("planning_status_marker") or "")
     if planning_marker.strip() == "### ARBITER_COMPLETE":
         return MonitorEvent(kind="arbiter_complete", workspace=workspace, reason="arbiter marker")
@@ -77,6 +84,17 @@ def _has_zero_work(payload: dict[str, Any]) -> bool:
         "learning_queue_depth",
     )
     return all(_int(payload.get(key)) == 0 for key in keys)
+
+
+def _queued_work(payload: dict[str, Any]) -> int:
+    return sum(
+        _int(payload.get(key))
+        for key in (
+            "execution_queue_depth",
+            "planning_queue_depth",
+            "learning_queue_depth",
+        )
+    )
 
 
 def _int(value: object) -> int:

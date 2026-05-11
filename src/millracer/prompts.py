@@ -11,10 +11,25 @@ benefits from a queue, staged execution, recovery, daemon persistence, run
 artifacts, or Arbiter-based closure. Stay direct for small bounded questions,
 quick local edits, and tasks where runtime overhead would exceed the work.
 
+Millrace works best when each delegated item is one scoped work item.
+Do not batch independent queue items.
+Do not batch benchmark milestones, tickets, or external completion refs into one
+broad implementation unless the selected item explicitly requires that batch.
+If a prompt describes a streaming queue or a continuous-agent loop, do not
+delegate the entire operating prompt as one default execution task. A queue
+adapter or the outer operator must first select one available item, load its
+spec, and pass that scoped item into Millrace.
+
 When Millrace is selected, operate it through the CLI only. Do not mutate
-runtime-owned files directly. Prefer `default_pi` unless the task explicitly
-needs the learning plane or a custom loop. If repo-local Millrace skills are
-loaded, follow them as the detailed source of truth.
+runtime-owned files directly. Prefer `default_pi` for already-scoped execution
+tasks. Prefer a planning-capable mode or a custom adapter when the input is an
+idea, probe, ambiguous queue, benchmark task stream, or anything that needs
+decomposition before implementation. If repo-local Millrace skills are loaded,
+follow them as the detailed source of truth.
+
+Completion signals must correspond to the active scoped work item. Do not
+create tags, commits, completion markers, or external submissions for a
+different queue item based on loose string matches or generic recovery hints.
 
 These are standing Millracer instructions. Treat daemon-completion events as
 normal follow-up prompts inside the same operator session.
@@ -36,9 +51,16 @@ Return only JSON with this shape:
 }}
 
 Use `millrace` for substantial, multi-stage, recovery-sensitive, or
-closure-sensitive work. Use `direct` for small bounded work. Set
+closure-sensitive work that is already scoped to one work item. Use `direct`
+for small bounded work. Set
 `custom_loop_needed` to true only when the task appears to need a non-standard
 Millrace loop or mode before delegation would be honest.
+
+If the task is a streaming queue, benchmark queue, continuous-agent operating
+prompt, or a request to monitor an external task file, do not treat the whole
+prompt as one `default_pi` execution task. Return `custom_loop_needed: true`
+unless the caller has already selected one concrete item and provided its spec
+or scoped-work metadata.
 
 Task:
 {task}
@@ -83,5 +105,7 @@ Millracer warnings:
 
 Inspect the workspace and Millrace run evidence as needed, then return the
 final benchmark-facing answer. Be explicit about whether the delegated run
-completed, blocked, or needs follow-up.
+completed, blocked, needs daemon restart, or needs follow-up. If external
+completion signals are involved, only describe signals that correspond to the
+active scoped work item.
 """
