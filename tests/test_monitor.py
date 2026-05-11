@@ -48,6 +48,23 @@ def test_classify_status_detects_blocked_runtime() -> None:
     assert event == MonitorEvent(kind="blocked", workspace="/tmp/ws", reason="runner_timeout")
 
 
+def test_classify_status_detects_running_daemon_with_drained_work() -> None:
+    event = classify_status(
+        {
+            "workspace": "/tmp/ws",
+            "process_running": True,
+            "active_stage": "none",
+            "active_run_count": 0,
+            "execution_queue_depth": 0,
+            "planning_queue_depth": 0,
+            "learning_queue_depth": 0,
+            "execution_status_marker": "### UPDATE_COMPLETE",
+        }
+    )
+
+    assert event == MonitorEvent(kind="complete", workspace="/tmp/ws", reason="daemon idle with no work")
+
+
 def test_monitor_wait_returns_first_terminal_event() -> None:
     statuses = iter(
         [

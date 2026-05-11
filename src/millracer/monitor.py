@@ -36,7 +36,7 @@ def classify_status(payload: dict[str, Any]) -> MonitorEvent | None:
             reason="closure target closed",
         )
 
-    if _has_zero_work(payload) and payload.get("process_running") is False:
+    if _has_zero_work(payload) and str(payload.get("active_stage") or "none") == "none":
         return MonitorEvent(kind="complete", workspace=workspace, reason="daemon idle with no work")
 
     if payload.get("process_running") is False and _int(payload.get("active_run_count")) > 0:
