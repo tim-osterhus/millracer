@@ -37,6 +37,18 @@ cd /Users/timinator/Desktop/Millrace-Dev/dev/harness/millracer
 
 ## Install
 
+From PyPI:
+
+```bash
+pipx install millracer
+```
+
+Or with uv:
+
+```bash
+uv tool install millracer
+```
+
 For an isolated command-line install from a local checkout:
 
 ```bash
@@ -56,7 +68,7 @@ You can also run without installing:
 uv run --extra dev python -m millracer --help
 ```
 
-After this repo is available on GitHub, direct install is:
+Direct install from GitHub is:
 
 ```bash
 pipx install git+https://github.com/tim-osterhus/millracer
