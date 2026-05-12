@@ -3,6 +3,7 @@ from pathlib import Path
 from millracer.agent import MillracerAgent, RunOptions
 from millracer.decision import Decision
 from millracer.monitor import MonitorEvent
+from millracer.scope import ScopedWorkItem
 
 
 class FakePi:
@@ -65,6 +66,11 @@ def test_agent_routes_auto_decision_into_millrace_flow() -> None:
 
     assert result.route == "millrace"
     assert result.intake_kind == "probe"
+    assert result.outcome == "completed"
+    assert result.scoped_completion is True
+    assert result.completion_evidence == (
+        {"kind": "arbiter_complete", "reason": "test", "workspace": "/tmp/ws"},
+    )
     assert result.decision == Decision(route="millrace", why="needs durable execution")
     assert result.output == "final answer"
     assert millrace.calls == [
@@ -143,7 +149,7 @@ def test_agent_restarts_daemon_when_monitor_reports_restart_needed() -> None:
                     reason="daemon stopped with queued work",
                 ),
                 MonitorEvent(
-                    kind="complete",
+                    kind="idle_no_work",
                     workspace="/tmp/ws",
                     reason="daemon idle with no work",
                 ),
@@ -162,10 +168,12 @@ def test_agent_restarts_daemon_when_monitor_reports_restart_needed() -> None:
     )
 
     assert result.event == MonitorEvent(
-        kind="complete",
+        kind="idle_no_work",
         workspace="/tmp/ws",
         reason="daemon idle with no work",
     )
+    assert result.outcome == "incomplete"
+    assert result.scoped_completion is False
     assert millrace.calls == [
         "initialize",
         "validate",
@@ -186,7 +194,7 @@ def test_agent_surfaces_progress_events_without_stopping_daemon_early() -> None:
                     workspace="/tmp/ws",
                     reason="updater update complete",
                 ),
-                MonitorEvent(kind="complete", workspace="/tmp/ws", reason="daemon idle"),
+                MonitorEvent(kind="idle_no_work", workspace="/tmp/ws", reason="daemon idle"),
             ]
 
         def wait(self, *, timeout_seconds: float) -> MonitorEvent:
@@ -208,6 +216,8 @@ def test_agent_surfaces_progress_events_without_stopping_daemon_early() -> None:
             reason="updater update complete",
         ),
     )
+    assert result.outcome == "incomplete"
+    assert result.scoped_completion is False
     assert "Millrace reported this progress event" in pi.prompts[-2]
     assert millrace.calls == [
         "initialize",
@@ -228,7 +238,7 @@ def test_agent_can_ignore_progress_prompts_when_notifications_disabled() -> None
                     workspace="/tmp/ws",
                     reason="updater update complete",
                 ),
-                MonitorEvent(kind="complete", workspace="/tmp/ws", reason="daemon idle"),
+                MonitorEvent(kind="idle_no_work", workspace="/tmp/ws", reason="daemon idle"),
             ]
 
         def wait(self, *, timeout_seconds: float) -> MonitorEvent:
@@ -250,3 +260,50 @@ def test_agent_can_ignore_progress_prompts_when_notifications_disabled() -> None
 
     assert result.progress_events == ()
     assert all("Millrace reported this progress event" not in prompt for prompt in pi.prompts)
+
+
+def test_agent_reports_existing_blocked_scoped_intake_without_reusing_as_completion() -> None:
+    class BlockedScopedMillrace(FakeMillrace):
+        def find_existing_scoped_intake(self, scoped_work_item):  # noqa: ANN001
+            self.calls.append(f"find_existing:{scoped_work_item.item_id}")
+            return Path("/tmp/ws/.millracer/intake/probe-old.md")
+
+        def status(self) -> dict[str, object]:
+            self.calls.append("status")
+            return {
+                "workspace": "/tmp/ws",
+                "current_failure_class": "recon_handoff_invalid",
+                "latest_runtime_error_report_path": "/tmp/ws/runtime-errors/report.md",
+                "active_run_count": 0,
+                "execution_queue_depth": 0,
+                "planning_queue_depth": 0,
+                "learning_queue_depth": 0,
+            }
+
+    pi = FakePi()
+    millrace = BlockedScopedMillrace()
+    agent = MillracerAgent(pi=pi, millrace=millrace, monitor=FakeMonitor())
+
+    result = agent.run(
+        "Process the selected scoped item",
+        options=RunOptions(
+            workspace=Path("/tmp/ws"),
+            cwd=Path("/tmp/ws"),
+            route="millrace",
+            scoped_work_item=ScopedWorkItem(item_id="ITEM-123"),
+        ),
+    )
+
+    assert result.event == MonitorEvent(
+        kind="blocked",
+        workspace="/tmp/ws",
+        reason="recon_handoff_invalid",
+    )
+    assert result.outcome == "blocked"
+    assert result.scoped_completion is False
+    assert millrace.calls == [
+        "initialize",
+        "validate",
+        "find_existing:ITEM-123",
+        "status",
+    ]

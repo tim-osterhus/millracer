@@ -133,7 +133,8 @@ The JSON input accepts `task`, `prompt`, or `instructions`, plus an optional
 `workspace` and optional `intake_kind`. The option name is still
 `--benchmark-json` for CLI compatibility. The JSON output includes the selected
 route, intake kind, decision metadata, warnings, Millrace event data, intake
-document path, status payload, progress events, and final answer.
+document path, status payload, progress events, final outcome, scoped
+completion flag, completion evidence, and final answer.
 
 Adapters for streaming queues should pass exactly one selected item at a time
 using `scoped_work_item`:
@@ -157,6 +158,10 @@ using `scoped_work_item`:
 Millracer writes this metadata into the Millrace intake task as the scoped-work
 contract. The delegated agent is told not to batch independent queue items and
 not to create completion signals for any item other than the selected one.
+External callers should treat `scoped_completion: true` as the signal that the
+selected scoped item completed. A drained daemon without scoped completion
+evidence returns `outcome: "incomplete"` and must not be treated as selected
+item completion.
 
 ## Intake Kinds
 
@@ -229,7 +234,7 @@ Millracer keeps the outer interface simple:
 4. enqueue probe, idea, or task documents into Millrace when durable staged
    execution is useful
 5. notify Pi about meaningful terminal-stage progress while monitoring
-6. inject daemon-completion events back into Pi for final inspection
+6. inject terminal daemon events back into Pi for final inspection
 
 The goal is a dedicated Millrace-equipped operator that is still easy to drive
 from automation. External callers can use one-shot `run`; humans and longer
@@ -290,10 +295,11 @@ is explicitly the requested work.
 
 Terminal-stage notifications are default-on. Updater `UPDATE_COMPLETE` is a
 progress event when other queues or closure targets remain; it is not treated
-as global run closure. Arbiter completion and full daemon idle states remain
-terminal events for the delegated run.
+as global run closure. Arbiter completion is scoped completion evidence. Full
+daemon idle without that evidence is a terminal `idle_no_work` event with an
+`incomplete` outcome.
 
 The current finalization turn combines two jobs: notification that a daemon
-finished and production of the final answer. The `MonitorEvent` boundary keeps
-the hook explicit so a later version can chain follow-up delegations before
-finalizing.
+reached a terminal event and production of the final answer. The `MonitorEvent`
+boundary keeps the hook explicit so a later version can chain follow-up
+delegations before finalizing.

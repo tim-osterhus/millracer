@@ -60,7 +60,11 @@ def classify_status(
         )
 
     if _is_globally_drained(payload):
-        return MonitorEvent(kind="complete", workspace=workspace, reason="daemon idle with no work")
+        return MonitorEvent(
+            kind="idle_no_work",
+            workspace=workspace,
+            reason="daemon idle with no work",
+        )
 
     if payload.get("process_running") is False and _int(payload.get("active_run_count")) > 0:
         return MonitorEvent(

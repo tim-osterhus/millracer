@@ -45,6 +45,9 @@ def test_render_benchmark_result_includes_scoped_work_item() -> None:
             output="done",
             scoped_work_item=ScopedWorkItem(item_id="ITEM-123"),
             intake_signals=("large pre-existing codebase",),
+            outcome="completed",
+            scoped_completion=True,
+            completion_evidence=({"kind": "arbiter_complete", "reason": "closed"},),
         )
     )
 
@@ -52,3 +55,6 @@ def test_render_benchmark_result_includes_scoped_work_item() -> None:
     assert '"item_id": "ITEM-123"' in raw
     assert '"intake_kind": "probe"' in raw
     assert '"large pre-existing codebase"' in raw
+    assert '"outcome": "completed"' in raw
+    assert '"scoped_completion": true' in raw
+    assert '"completion_evidence"' in raw

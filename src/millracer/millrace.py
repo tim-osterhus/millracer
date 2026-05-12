@@ -57,6 +57,24 @@ class MillraceController:
             )
         )
 
+    def find_existing_scoped_intake(self, scoped_work_item: ScopedWorkItem) -> Path | None:
+        intake_dir = self.workspace / ".millracer" / "intake"
+        if not intake_dir.exists():
+            return None
+        intake_paths = sorted(
+            intake_dir.glob("*.md"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for intake_path in intake_paths:
+            try:
+                text = intake_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if _matches_scoped_work(text, scoped_work_item):
+                return intake_path
+        return None
+
     def enqueue(
         self,
         intake_kind: IntakeKind | str,
@@ -419,3 +437,10 @@ def _render_scoped_work(scoped_work_item: ScopedWorkItem | None) -> str:
     for constraint in scoped_work_item.constraints:
         lines.append(f"- Constraint: {constraint}")
     return "\n".join(lines) + "\n"
+
+
+def _matches_scoped_work(text: str, scoped_work_item: ScopedWorkItem) -> bool:
+    markers = [f"- Item-ID: {scoped_work_item.item_id}"]
+    if scoped_work_item.completion_ref:
+        markers.append(f"- Completion-Ref: {scoped_work_item.completion_ref}")
+    return any(marker in text for marker in markers)

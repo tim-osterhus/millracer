@@ -39,6 +39,9 @@ def test_finalization_prompt_reports_intake_kind_and_scope() -> None:
         workspace="/tmp/ws",
         route="millrace",
         intake_kind="probe",
+        outcome="completed",
+        scoped_completion=True,
+        completion_evidence_json='[{"kind": "arbiter_complete"}]',
         event_kind="complete",
         event_reason="done",
         status_json="{}",
@@ -47,6 +50,9 @@ def test_finalization_prompt_reports_intake_kind_and_scope() -> None:
 
     assert "- route: millrace" in prompt
     assert "- intake kind: probe" in prompt
+    assert "- outcome: completed" in prompt
+    assert "- scoped completion: True" in prompt
+    assert '[{"kind": "arbiter_complete"}]' in prompt
     assert '{"item_id": "ITEM-123"}' in prompt
 
 
@@ -59,6 +65,9 @@ def test_injected_prompts_avoid_forbidden_benchmark_specific_terms() -> None:
             workspace="/tmp/ws",
             route="millrace",
             intake_kind="probe",
+            outcome="completed",
+            scoped_completion=True,
+            completion_evidence_json='[{"kind": "arbiter_complete"}]',
             event_kind="complete",
             event_reason="done",
             status_json="{}",

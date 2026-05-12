@@ -63,7 +63,7 @@ def test_classify_status_detects_running_daemon_with_drained_work() -> None:
     )
 
     assert event == MonitorEvent(
-        kind="complete",
+        kind="idle_no_work",
         workspace="/tmp/ws",
         reason="daemon idle with no work",
     )
@@ -186,4 +186,4 @@ def test_monitor_suppresses_duplicate_progress_events() -> None:
     )
 
     assert monitor.wait(timeout_seconds=1).kind == "stage_progress"
-    assert monitor.wait(timeout_seconds=1).kind == "complete"
+    assert monitor.wait(timeout_seconds=1).kind == "idle_no_work"

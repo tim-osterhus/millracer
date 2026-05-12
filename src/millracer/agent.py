@@ -70,6 +70,9 @@ class RunResult:
     warnings: tuple[str, ...] = ()
     scoped_work_item: ScopedWorkItem | None = None
     progress_events: tuple[MonitorEvent, ...] = ()
+    outcome: str = "incomplete"
+    scoped_completion: bool = False
+    completion_evidence: tuple[dict[str, str], ...] = ()
 
     def to_jsonable(self) -> dict[str, object]:
         return {
@@ -98,6 +101,9 @@ class RunResult:
             "task_path": None if self.task_path is None else str(self.task_path),
             "status": self.status,
             "warnings": list(self.warnings),
+            "outcome": self.outcome,
+            "scoped_completion": self.scoped_completion,
+            "completion_evidence": list(self.completion_evidence),
             "scoped_work_item": None
             if self.scoped_work_item is None
             else self.scoped_work_item.to_jsonable(),
@@ -135,6 +141,7 @@ class MillracerAgent:
                 output=output,
                 intake_kind=intake_kind,
                 intake_signals=intake_decision.signals,
+                outcome="completed",
                 warnings=warnings,
                 scoped_work_item=options.scoped_work_item,
             )
@@ -144,11 +151,24 @@ class MillracerAgent:
             set_mode(decision.mode)
         self.millrace.initialize()
         self.millrace.validate()
-        task_path = self.millrace.enqueue(
-            intake_decision.intake_kind,
-            task,
-            scoped_work_item=options.scoped_work_item,
+        existing_blocked = self._existing_blocked_scoped_result(
+            task=task,
+            decision=decision,
+            intake_kind=intake_kind,
+            intake_signals=intake_decision.signals,
+            warnings=warnings,
+            options=options,
         )
+        if existing_blocked is not None:
+            return existing_blocked
+
+        task_path = _existing_scoped_intake_path(self.millrace, options.scoped_work_item)
+        if task_path is None:
+            task_path = self.millrace.enqueue(
+                intake_decision.intake_kind,
+                task,
+                scoped_work_item=options.scoped_work_item,
+            )
         self.millrace.start_daemon()
         event, progress_events = self._wait_for_terminal_event(
             task=task,
@@ -158,12 +178,20 @@ class MillracerAgent:
         if not options.keep_daemon:
             self.millrace.stop_daemon()
         status = self.millrace.status()
+        outcome, scoped_completion, completion_evidence = _outcome_for_event(event)
         output = self.pi.complete(
             finalization_prompt(
                 task=task,
                 workspace=str(options.workspace),
                 route="millrace",
                 intake_kind=intake_kind,
+                outcome=outcome,
+                scoped_completion=scoped_completion,
+                completion_evidence_json=json.dumps(
+                    list(completion_evidence),
+                    indent=2,
+                    sort_keys=True,
+                ),
                 event_kind=event.kind,
                 event_reason=event.reason,
                 status_json=json.dumps(status, indent=2, sort_keys=True),
@@ -197,6 +225,9 @@ class MillracerAgent:
             warnings=warnings,
             scoped_work_item=options.scoped_work_item,
             progress_events=progress_events,
+            outcome=outcome,
+            scoped_completion=scoped_completion,
+            completion_evidence=completion_evidence,
         )
 
     def _decision_for(self, task: str, *, options: RunOptions) -> Decision:
@@ -243,6 +274,64 @@ class MillracerAgent:
             self.millrace.restart_daemon()
             restarts += 1
 
+    def _existing_blocked_scoped_result(
+        self,
+        *,
+        task: str,
+        decision: Decision,
+        intake_kind: str,
+        intake_signals: tuple[str, ...],
+        warnings: tuple[str, ...],
+        options: RunOptions,
+    ) -> RunResult | None:
+        task_path = _existing_scoped_intake_path(self.millrace, options.scoped_work_item)
+        if task_path is None:
+            return None
+        status = self.millrace.status()
+        failure_class = status.get("current_failure_class")
+        latest_error = status.get("latest_runtime_error_report_path")
+        if not failure_class and not latest_error:
+            return None
+        reason = str(failure_class or "latest runtime error")
+        event = MonitorEvent(
+            kind="blocked",
+            workspace=str(status.get("workspace") or options.workspace),
+            reason=reason,
+        )
+        output = self.pi.complete(
+            finalization_prompt(
+                task=task,
+                workspace=str(options.workspace),
+                route="millrace",
+                intake_kind=intake_kind,
+                outcome="blocked",
+                scoped_completion=False,
+                completion_evidence_json="[]",
+                event_kind=event.kind,
+                event_reason=event.reason,
+                status_json=json.dumps(status, indent=2, sort_keys=True),
+                warnings=warnings,
+                scoped_work_json=_scoped_work_json(options.scoped_work_item),
+                progress_events_json="[]",
+            ),
+            cwd=options.cwd,
+            timeout_seconds=options.pi_timeout_seconds,
+        )
+        return RunResult(
+            route="millrace",
+            decision=decision,
+            output=output,
+            intake_kind=intake_kind,
+            intake_signals=intake_signals,
+            event=event,
+            task_path=task_path,
+            status=status,
+            warnings=warnings,
+            scoped_work_item=options.scoped_work_item,
+            outcome="blocked",
+            scoped_completion=False,
+        )
+
 
 def _warnings_for_decision(decision: Decision) -> tuple[str, ...]:
     if not decision.custom_loop_needed:
@@ -251,6 +340,41 @@ def _warnings_for_decision(decision: Decision) -> tuple[str, ...]:
         "Pi indicated that a custom Millrace loop may be needed; Millracer will still use "
         f"`{decision.mode}` unless the caller passes a different --millrace-mode.",
     )
+
+
+def _existing_scoped_intake_path(
+    millrace: MillraceLike,
+    scoped_work_item: ScopedWorkItem | None,
+) -> Path | None:
+    if scoped_work_item is None:
+        return None
+    finder = getattr(millrace, "find_existing_scoped_intake", None)
+    if not callable(finder):
+        return None
+    found = finder(scoped_work_item)
+    return found if isinstance(found, Path) else None
+
+
+def _outcome_for_event(event: MonitorEvent) -> tuple[str, bool, tuple[dict[str, str], ...]]:
+    if event.kind in {"arbiter_complete", "scoped_complete"}:
+        return (
+            "completed",
+            True,
+            (
+                {
+                    "kind": event.kind,
+                    "workspace": event.workspace,
+                    "reason": event.reason,
+                },
+            ),
+        )
+    if event.kind == "blocked":
+        return "blocked", False, ()
+    if event.kind == "restart_needed":
+        return "restart_needed", False, ()
+    if event.kind == "crashed":
+        return "crashed", False, ()
+    return "incomplete", False, ()
 
 
 def _scoped_work_json(scoped_work_item: ScopedWorkItem | None) -> str | None:
