@@ -1,7 +1,7 @@
-"""Pi-backed Millrace-aware benchmark harness."""
+"""Pi-backed Millrace-aware operator harness."""
 
 from __future__ import annotations
 
 __all__ = ["__version__"]
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"

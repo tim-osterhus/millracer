@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "millracer"
-version = "0.1.2"
-description = "Pi-backed Millrace-aware benchmark harness and agent shim."
+version = "0.1.3"
+description = "Pi-backed Millrace-aware operator harness and agent shim."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"

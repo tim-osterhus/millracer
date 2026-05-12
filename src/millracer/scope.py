@@ -1,4 +1,4 @@
-"""Structured scoped-work metadata shared by benchmark adapters and Millrace intake."""
+"""Structured scoped-work metadata shared by external callers and Millrace intake."""
 
 from __future__ import annotations
 

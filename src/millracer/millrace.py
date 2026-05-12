@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from millracer.command import CommandExecutor, ProcessHandle, SubprocessExecutor, require_success
+from millracer.intake import IntakeKind, normalize_intake_kind
 from millracer.scope import ScopedWorkItem
 
 
@@ -56,14 +57,64 @@ class MillraceController:
             )
         )
 
+    def enqueue(
+        self,
+        intake_kind: IntakeKind | str,
+        task: str,
+        scoped_work_item: ScopedWorkItem | None = None,
+    ) -> Path:
+        kind = normalize_intake_kind(intake_kind, allow_auto=False)
+        if kind is None:
+            raise ValueError(f"unsupported Millrace intake kind: {intake_kind}")
+        if kind is IntakeKind.PROBE:
+            return self.enqueue_probe(task, scoped_work_item=scoped_work_item)
+        if kind is IntakeKind.IDEA:
+            return self.enqueue_idea(task, scoped_work_item=scoped_work_item)
+        return self.enqueue_task(task, scoped_work_item=scoped_work_item)
+
+    def enqueue_probe(self, task: str, scoped_work_item: ScopedWorkItem | None = None) -> Path:
+        return self._enqueue_intake(
+            IntakeKind.PROBE,
+            "add-probe",
+            task,
+            scoped_work_item=scoped_work_item,
+        )
+
+    def enqueue_idea(self, task: str, scoped_work_item: ScopedWorkItem | None = None) -> Path:
+        return self._enqueue_intake(
+            IntakeKind.IDEA,
+            "add-idea",
+            task,
+            scoped_work_item=scoped_work_item,
+        )
+
     def enqueue_task(self, task: str, scoped_work_item: ScopedWorkItem | None = None) -> Path:
-        task_path = self._write_task_file(task, scoped_work_item=scoped_work_item)
+        return self._enqueue_intake(
+            IntakeKind.TASK,
+            "add-task",
+            task,
+            scoped_work_item=scoped_work_item,
+        )
+
+    def _enqueue_intake(
+        self,
+        intake_kind: IntakeKind,
+        command: str,
+        task: str,
+        *,
+        scoped_work_item: ScopedWorkItem | None = None,
+    ) -> Path:
+        task_path = self._write_intake_file(
+            intake_kind,
+            task,
+            scoped_work_item=scoped_work_item,
+        )
         require_success(
             self.executor.run(
                 (
                     self.config.command,
                     "queue",
-                    "add-task",
+                    command,
                     str(task_path),
                     "--workspace",
                     str(self.workspace),
@@ -167,19 +218,21 @@ class MillraceController:
         with suppress(TimeoutError, subprocess.TimeoutExpired):
             self._daemon.wait(timeout=5.0)
 
-    def _write_task_file(
+    def _write_intake_file(
         self,
+        intake_kind: IntakeKind,
         task: str,
         *,
         scoped_work_item: ScopedWorkItem | None = None,
     ) -> Path:
         now = datetime.now(UTC)
-        task_id = _task_id(task, now)
+        task_id = _task_id(intake_kind, task, now)
         intake_dir = self.workspace / ".millracer" / "intake"
         intake_dir.mkdir(parents=True, exist_ok=True)
         task_path = intake_dir / f"{task_id}.md"
+        renderer = _renderer_for_intake(intake_kind)
         task_path.write_text(
-            render_task_document(
+            renderer(
                 task_id=task_id,
                 title=_title_from_task(task),
                 summary=task.strip(),
@@ -214,7 +267,7 @@ Target-Paths:
 - .
 
 Acceptance:
-- Complete the requested benchmark task or report the concrete blocker.
+- Complete the requested implementation work or report the concrete blocker.
 - If this task came from an external queue, complete only the selected scoped work item.
 
 Required-Checks:
@@ -232,12 +285,110 @@ Scope Contract:
   item, report the missing scope instead of processing the whole queue.
 
 Risk:
-- Benchmark adapter task may need follow-up inspection by the outer Millracer agent.
+- This task may need follow-up inspection by the outer Millracer agent.
 """
 
 
-def _task_id(task: str, now: datetime) -> str:
-    return f"millracer-{now.strftime('%Y%m%d%H%M%S')}-{_slug(task)[:32]}"
+def render_probe_document(
+    *,
+    task_id: str,
+    title: str,
+    summary: str,
+    created_at: str,
+    scoped_work_item: ScopedWorkItem | None = None,
+) -> str:
+    scoped_work = _render_scoped_work(scoped_work_item)
+    return f"""\
+# {title}
+
+Probe-ID: {task_id}
+Title: {title}
+Summary: {summary}
+Request: {summary}
+Created-At: {created_at}
+Created-By: millracer
+
+{scoped_work}
+Target-Paths:
+- .
+
+Constraints:
+- Do not implement code changes during this probe stage.
+- Do not broaden the selected work item into unrelated implementation.
+- Preserve any scoped-work constraints named above.
+
+Recon-Questions:
+- Which codebase areas are likely involved?
+- Which tests or existing examples define expected behavior?
+- Which compatibility and regression risks matter?
+- Is this one execution task, or does it need planning/decomposition?
+- What should downstream Builder/Checker know before changing code?
+
+Expected-Output:
+- Recon packet summarizing findings and candidate files.
+- Route recommendation for probe, idea, or task follow-up.
+- Downstream work shape with suggested verification.
+
+Acceptance:
+- Produce a recon packet, route recommendation, and downstream work shape.
+
+Risk-Notes:
+- Acting before reconnaissance may miss repository conventions or regression risks.
+
+References:
+- queued by Millracer
+"""
+
+
+def render_idea_document(
+    *,
+    task_id: str,
+    title: str,
+    summary: str,
+    created_at: str,
+    scoped_work_item: ScopedWorkItem | None = None,
+) -> str:
+    scoped_work = _render_scoped_work(scoped_work_item)
+    return f"""\
+# {title}
+
+Idea-ID: {task_id}
+Title: {title}
+Desired-Outcome: {summary}
+Created-At: {created_at}
+Created-By: millracer
+
+{scoped_work}
+Operator-Visible-Value:
+- Preserve the requested outcome and make the work actionable.
+
+Constraints:
+- Preserve any scoped-work constraints named above.
+- Do not expand into unrelated work items.
+
+Acceptance-Intent:
+- Shape the idea into clear implementation slices and verification expectations.
+- Identify blockers or missing decisions before execution.
+
+Planning-Intent:
+- Decompose only as needed to make downstream execution safe and reviewable.
+- Recommend the appropriate execution mode or follow-up intake kind.
+
+References:
+- queued by Millracer
+"""
+
+
+def _task_id(intake_kind: IntakeKind, task: str, now: datetime) -> str:
+    return f"{intake_kind.value}-{now.strftime('%Y%m%d%H%M%S')}-{_slug(task)[:32]}"
+
+
+def _renderer_for_intake(intake_kind: IntakeKind):
+    if intake_kind is IntakeKind.PROBE:
+        return render_probe_document
+    if intake_kind is IntakeKind.IDEA:
+        return render_idea_document
+    return render_task_document
 
 
 def _title_from_task(task: str) -> str:

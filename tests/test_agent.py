@@ -28,9 +28,9 @@ class FakeMillrace:
     def validate(self) -> None:
         self.calls.append("validate")
 
-    def enqueue_task(self, task: str, scoped_work_item=None) -> Path:  # noqa: ANN001
-        self.calls.append(f"enqueue:{task}")
-        return Path("/tmp/ws/.millracer/intake/task.md")
+    def enqueue(self, intake_kind, task: str, scoped_work_item=None) -> Path:  # noqa: ANN001
+        self.calls.append(f"enqueue:{intake_kind}:{task}")
+        return Path(f"/tmp/ws/.millracer/intake/{intake_kind}.md")
 
     def start_daemon(self):  # noqa: ANN201
         self.calls.append("start_daemon")
@@ -64,12 +64,13 @@ def test_agent_routes_auto_decision_into_millrace_flow() -> None:
     )
 
     assert result.route == "millrace"
+    assert result.intake_kind == "probe"
     assert result.decision == Decision(route="millrace", why="needs durable execution")
     assert result.output == "final answer"
     assert millrace.calls == [
         "initialize",
         "validate",
-        "enqueue:Implement a multi-stage refactor",
+        "enqueue:probe:Implement a multi-stage refactor",
         "start_daemon",
         "stop_daemon",
         "status",
@@ -113,6 +114,25 @@ def test_agent_warns_when_decision_requests_custom_loop() -> None:
     assert "custom Millrace loop" in result.warnings[0]
 
 
+def test_agent_uses_forced_intake_override() -> None:
+    pi = FakePi()
+    millrace = FakeMillrace()
+    agent = MillracerAgent(pi=pi, millrace=millrace, monitor=FakeMonitor())
+
+    result = agent.run(
+        "Update behavior in a large pre-existing codebase.",
+        options=RunOptions(
+            workspace=Path("/tmp/ws"),
+            cwd=Path("/tmp/ws"),
+            route="millrace",
+            intake="task",
+        ),
+    )
+
+    assert result.intake_kind == "task"
+    assert "enqueue:task:Update behavior in a large pre-existing codebase." in millrace.calls
+
+
 def test_agent_restarts_daemon_when_monitor_reports_restart_needed() -> None:
     class RestartMonitor:
         def __init__(self) -> None:
@@ -149,9 +169,84 @@ def test_agent_restarts_daemon_when_monitor_reports_restart_needed() -> None:
     assert millrace.calls == [
         "initialize",
         "validate",
-        "enqueue:Process one scoped queue item",
+        "enqueue:probe:Process one scoped queue item",
         "start_daemon",
         "restart_daemon",
         "stop_daemon",
         "status",
     ]
+
+
+def test_agent_surfaces_progress_events_without_stopping_daemon_early() -> None:
+    class ProgressMonitor:
+        def __init__(self) -> None:
+            self.events = [
+                MonitorEvent(
+                    kind="stage_progress",
+                    workspace="/tmp/ws",
+                    reason="updater update complete",
+                ),
+                MonitorEvent(kind="complete", workspace="/tmp/ws", reason="daemon idle"),
+            ]
+
+        def wait(self, *, timeout_seconds: float) -> MonitorEvent:
+            return self.events.pop(0)
+
+    pi = FakePi()
+    millrace = FakeMillrace()
+    agent = MillracerAgent(pi=pi, millrace=millrace, monitor=ProgressMonitor())
+
+    result = agent.run(
+        "Process one scoped queue item",
+        options=RunOptions(workspace=Path("/tmp/ws"), cwd=Path("/tmp/ws"), route="millrace"),
+    )
+
+    assert result.progress_events == (
+        MonitorEvent(
+            kind="stage_progress",
+            workspace="/tmp/ws",
+            reason="updater update complete",
+        ),
+    )
+    assert "Millrace reported this progress event" in pi.prompts[-2]
+    assert millrace.calls == [
+        "initialize",
+        "validate",
+        "enqueue:probe:Process one scoped queue item",
+        "start_daemon",
+        "stop_daemon",
+        "status",
+    ]
+
+
+def test_agent_can_ignore_progress_prompts_when_notifications_disabled() -> None:
+    class ProgressMonitor:
+        def __init__(self) -> None:
+            self.events = [
+                MonitorEvent(
+                    kind="stage_progress",
+                    workspace="/tmp/ws",
+                    reason="updater update complete",
+                ),
+                MonitorEvent(kind="complete", workspace="/tmp/ws", reason="daemon idle"),
+            ]
+
+        def wait(self, *, timeout_seconds: float) -> MonitorEvent:
+            return self.events.pop(0)
+
+    pi = FakePi()
+    millrace = FakeMillrace()
+    agent = MillracerAgent(pi=pi, millrace=millrace, monitor=ProgressMonitor())
+
+    result = agent.run(
+        "Process one scoped queue item",
+        options=RunOptions(
+            workspace=Path("/tmp/ws"),
+            cwd=Path("/tmp/ws"),
+            route="millrace",
+            notify_terminal_stages=False,
+        ),
+    )
+
+    assert result.progress_events == ()
+    assert all("Millrace reported this progress event" not in prompt for prompt in pi.prompts)

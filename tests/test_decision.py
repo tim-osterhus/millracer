@@ -6,11 +6,23 @@ def test_parse_decision_reads_fenced_json() -> None:
     Here is the decision:
 
     ```json
-    {"decision": "millrace", "why": "multi-stage", "mode": "learning_pi"}
+    {
+      "decision": "millrace",
+      "intake_kind": "probe",
+      "why": "multi-stage",
+      "mode": "learning_pi",
+      "signals": ["large pre-existing codebase", "uncertain affected files"]
+    }
     ```
     """
 
-    assert parse_decision(raw) == Decision(route="millrace", why="multi-stage", mode="learning_pi")
+    assert parse_decision(raw) == Decision(
+        route="millrace",
+        why="multi-stage",
+        mode="learning_pi",
+        intake_kind="probe",
+        signals=("large pre-existing codebase", "uncertain affected files"),
+    )
 
 
 def test_parse_decision_preserves_custom_loop_signal() -> None:
@@ -31,3 +43,11 @@ def test_parse_decision_falls_back_to_direct_when_output_is_unstructured() -> No
     assert decision.route == "direct"
     assert decision.why == "small edit"
     assert decision.mode == "default_pi"
+
+
+def test_parse_decision_normalizes_invalid_intake_to_none() -> None:
+    decision = parse_decision(
+        '{"decision": "millrace", "intake_kind": "whatever", "why": "multi-stage"}'
+    )
+
+    assert decision.intake_kind is None

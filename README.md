@@ -7,7 +7,7 @@ work directly or delegate substantial work into Millrace.
 Millracer is meant to be usable in two ways:
 
 - as a persistent operator you can talk to directly
-- as a one-shot command that benchmark harnesses such as EvoClaw can call
+- as a one-shot command that external automation can call
 
 ## Requirements
 
@@ -88,7 +88,7 @@ Type `/exit` or `/quit` to close the session.
 
 ## One-Shot Run
 
-Use `run` when another tool or benchmark needs one command that returns one
+Use `run` when another tool needs one command that returns one
 answer:
 
 ```bash
@@ -108,9 +108,9 @@ decision turn and the finalization turn share one Pi conversation. For
 compatibility debugging, `--pi-session print` uses one fresh `pi --print`
 process per Pi turn.
 
-## Benchmark JSON
+## External JSON
 
-For benchmark adapters, pass task input as JSON on stdin:
+For external callers, pass task input as JSON on stdin:
 
 ```bash
 printf '{"task":"Fix the project and run the tests","workspace":"/path/to/workspace"}' \
@@ -118,8 +118,10 @@ printf '{"task":"Fix the project and run the tests","workspace":"/path/to/worksp
 ```
 
 The JSON input accepts `task`, `prompt`, or `instructions`, plus an optional
-`workspace`. The JSON output includes the selected route, decision metadata,
-warnings, Millrace event data, task path, status payload, and final answer.
+`workspace` and optional `intake_kind`. The option name is still
+`--benchmark-json` for CLI compatibility. The JSON output includes the selected
+route, intake kind, decision metadata, warnings, Millrace event data, intake
+document path, status payload, progress events, and final answer.
 
 Adapters for streaming queues should pass exactly one selected item at a time
 using `scoped_work_item`:
@@ -128,6 +130,7 @@ using `scoped_work_item`:
 {
   "task": "Implement the selected queue item only.",
   "workspace": "/path/to/workspace",
+  "intake_kind": "probe",
   "scoped_work_item": {
     "item_id": "ITEM-123",
     "title": "Fix the selected failure",
@@ -143,10 +146,33 @@ Millracer writes this metadata into the Millrace intake task as the scoped-work
 contract. The delegated agent is told not to batch independent queue items and
 not to create completion signals for any item other than the selected one.
 
+## Intake Kinds
+
+Millracer chooses both route and intake kind:
+
+- `probe`: investigation-first intake for uncertain codebase work.
+- `idea`: planning/decomposition intake for clear outcomes that need shaping.
+- `task`: execution intake for already-scoped local work.
+
+Use `--intake auto` for the default behavior. Auto selection uses Pi's decision
+when available, then a small deterministic fallback. For large pre-existing
+codebases with uncertain affected files, auto selection biases toward `probe`.
+Use `--intake task`, `--intake idea`, or `--intake probe` to force the intake
+kind exactly.
+
+Millracer dispatches the selected intake kind to the matching Millrace queue
+command:
+
+- `probe` -> `millrace queue add-probe`
+- `idea` -> `millrace queue add-idea`
+- `task` -> `millrace queue add-task`
+
 ## Common Options
 
 - `--route auto|direct|millrace`: let Pi choose, force direct work, or force
   Millrace delegation.
+- `--intake auto|probe|idea|task`: choose the Millrace intake kind for
+  delegated work.
 - `--workspace <path>`: Millrace workspace root and default command working
   directory.
 - `--cwd <path>`: command working directory when it differs from the workspace.
@@ -158,6 +184,9 @@ not to create completion signals for any item other than the selected one.
 - `--skill <path>`: load a Millrace operator skill package or `SKILL.md`.
 - `--no-default-skills`: disable automatic skill discovery.
 - `--daemon-timeout-seconds <n>`: maximum wait for a delegated Millrace run.
+- `--notify-terminal-stages` / `--no-notify-terminal-stages`: notify the outer
+  Pi session when meaningful terminal stages finish before full run drainage,
+  default enabled.
 - `--max-daemon-restarts <n>`: restart attempts after Millracer sees queued
   work with a stopped daemon, default `1`.
 - `--output json`: machine-readable one-shot output.
@@ -182,14 +211,17 @@ millracer operator \
 Millracer keeps the outer interface simple:
 
 1. receive one task
-2. ask Pi whether the task should stay direct or enter Millrace
+2. ask Pi whether the task should stay direct or enter Millrace, and which
+   intake kind fits delegated work
 3. run direct work through Pi when Millrace is unnecessary
-4. enqueue and monitor Millrace work when durable staged execution is useful
-5. inject daemon-completion events back into Pi for final inspection
+4. enqueue probe, idea, or task documents into Millrace when durable staged
+   execution is useful
+5. notify Pi about meaningful terminal-stage progress while monitoring
+6. inject daemon-completion events back into Pi for final inspection
 
 The goal is a dedicated Millrace-equipped operator that is still easy to drive
-from benchmark infrastructure. Benchmarks can use one-shot `run`; humans and
-longer operator sessions can use persistent `operator`.
+from automation. External callers can use one-shot `run`; humans and longer
+operator sessions can use persistent `operator`.
 
 By default, Millracer uses:
 
@@ -202,7 +234,7 @@ By default, Millracer uses:
 The automatic decision turn can flag that a custom Millrace loop appears
 necessary. Millracer preserves that signal in JSON output and emits a text-mode
 warning, but it still delegates with the selected `--millrace-mode`. Pass a
-custom mode explicitly when the benchmark setup has one available.
+custom mode explicitly when one is available.
 
 ## Routes
 
@@ -214,9 +246,9 @@ python -m millracer run --route direct "Summarize README.md"
 python -m millracer run --route millrace "Implement the pending refactor spec"
 ```
 
-Use `--output json` when driving benchmark infrastructure.
+Use `--output json` when driving external automation.
 
-## Benchmark Semantics
+## Delegation Semantics
 
 The daemon monitor is synchronous inside one delegated task. During that task,
 Millracer waits for a terminal Millrace event before returning to the caller.
@@ -225,25 +257,31 @@ notification, and finalization turns, and `operator` keeps it alive across
 multiple tasks.
 
 Millracer does not automatically retry blocked Millrace runs or fall back to
-direct execution. It reports those events to the final Pi turn so benchmark
-output reflects the real delegated run rather than hiding failures.
+direct execution. It reports those events to the final Pi turn so output
+reflects the real delegated run rather than hiding failures.
 
 If Millracer sees queued work while the daemon is stopped, it classifies that
 as `restart_needed`, clears stale Millrace state when needed, and restarts the
 daemon up to `--max-daemon-restarts`. This is a lifecycle repair only; it does
 not change the queued task or silently switch to direct execution.
 
-For delegated tasks, Millracer writes an intake task under `.millracer/intake/`
-and passes that file to `millrace queue add-task`. Millrace accepts arbitrary
-readable task markdown paths there and copies the parsed document into its
+For delegated work, Millracer writes an intake document under
+`.millracer/intake/` and passes that file to `millrace queue add-probe`,
+`millrace queue add-idea`, or `millrace queue add-task`. Millrace accepts
+arbitrary readable markdown paths there and copies the parsed document into its
 managed queue.
 
-For dynamic benchmark queues, the adapter should select one available item,
-load that item's spec, and call Millracer with `scoped_work_item`. Do not pass a
+For dynamic queues, the caller should select one available item, load that
+item's instructions, and call Millracer with `scoped_work_item`. Do not pass a
 whole continuous-agent operating prompt as one broad task unless broad batching
-is explicitly the item being measured.
+is explicitly the requested work.
+
+Terminal-stage notifications are default-on. Updater `UPDATE_COMPLETE` is a
+progress event when other queues or closure targets remain; it is not treated
+as global run closure. Arbiter completion and full daemon idle states remain
+terminal events for the delegated run.
 
 The current finalization turn combines two jobs: notification that a daemon
-finished and production of the benchmark-facing answer. The `MonitorEvent`
-boundary keeps the hook seam explicit so a later version can chain follow-up
-delegations before finalizing.
+finished and production of the final answer. The `MonitorEvent` boundary keeps
+the hook explicit so a later version can chain follow-up delegations before
+finalizing.

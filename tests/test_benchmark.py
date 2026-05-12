@@ -11,6 +11,7 @@ def test_parse_benchmark_request_preserves_scoped_work_item() -> None:
         {
           "task": "Implement the selected queue item only.",
           "workspace": "/tmp/ws",
+          "intake_kind": "probe",
           "scoped_work_item": {
             "item_id": "M06",
             "title": "Array API label encoder support",
@@ -24,6 +25,7 @@ def test_parse_benchmark_request_preserves_scoped_work_item() -> None:
     )
 
     assert request.workspace == Path("/tmp/ws")
+    assert request.intake_kind == "probe"
     assert request.scoped_work_item == ScopedWorkItem(
         item_id="M06",
         title="Array API label encoder support",
@@ -38,11 +40,15 @@ def test_render_benchmark_result_includes_scoped_work_item() -> None:
     raw = render_benchmark_result(
         RunResult(
             route="millrace",
+            intake_kind="probe",
             decision=Decision(route="millrace", why="test"),
             output="done",
             scoped_work_item=ScopedWorkItem(item_id="ITEM-123"),
+            intake_signals=("large pre-existing codebase",),
         )
     )
 
     assert '"scoped_work_item"' in raw
     assert '"item_id": "ITEM-123"' in raw
+    assert '"intake_kind": "probe"' in raw
+    assert '"large pre-existing codebase"' in raw

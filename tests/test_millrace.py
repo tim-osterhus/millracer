@@ -1,7 +1,14 @@
 from pathlib import Path
 
 from millracer.benchmark import ScopedWorkItem
-from millracer.millrace import MillraceConfig, MillraceController, render_task_document
+from millracer.intake import IntakeKind
+from millracer.millrace import (
+    MillraceConfig,
+    MillraceController,
+    render_idea_document,
+    render_probe_document,
+    render_task_document,
+)
 
 
 class RecordingExecutor:
@@ -89,6 +96,82 @@ def test_render_task_document_includes_scoped_work_contract() -> None:
     assert "Spec-Path: /srs/M06.md" in raw
     assert "Completion-Ref: agent-impl-M06" in raw
     assert "Do not batch independent queue items into this work item." in raw
+
+
+def test_render_probe_document_is_investigation_first() -> None:
+    raw = render_probe_document(
+        task_id="probe-abc",
+        title="Investigate launch behavior",
+        summary="Figure out how launch behavior should change.",
+        created_at="2026-05-10T00:00:00+00:00",
+        scoped_work_item=ScopedWorkItem(item_id="ITEM-123"),
+    )
+
+    assert "Probe-ID: probe-abc" in raw
+    assert "Summary: Figure out how launch behavior should change." in raw
+    assert "Request: Figure out how launch behavior should change." in raw
+    assert "Do not implement code changes during this probe stage." in raw
+    assert "Which codebase areas are likely involved?" in raw
+    assert "What should downstream Builder/Checker know before changing code?" in raw
+    assert "Item-ID: ITEM-123" in raw
+
+
+def test_render_idea_document_preserves_intent_and_scope() -> None:
+    raw = render_idea_document(
+        task_id="idea-abc",
+        title="Add operator dashboard",
+        summary="Add a dashboard for queued runs.",
+        created_at="2026-05-10T00:00:00+00:00",
+        scoped_work_item=ScopedWorkItem(item_id="ITEM-123"),
+    )
+
+    assert "Idea-ID: idea-abc" in raw
+    assert "Desired-Outcome:" in raw
+    assert "Planning-Intent:" in raw
+    assert "Item-ID: ITEM-123" in raw
+
+
+def test_controller_dispatches_probe_idea_and_task_to_matching_queue_commands(tmp_path) -> None:
+    executor = RecordingExecutor()
+    controller = MillraceController(
+        config=MillraceConfig(command="millrace", mode="default_pi"),
+        executor=executor,
+        workspace=tmp_path,
+    )
+
+    probe_path = controller.enqueue(IntakeKind.PROBE, "Investigate runtime behavior")
+    idea_path = controller.enqueue(IntakeKind.IDEA, "Build an operator dashboard")
+    task_path = controller.enqueue(IntakeKind.TASK, "Fix src/millracer/monitor.py")
+
+    assert probe_path.name.startswith("probe-")
+    assert idea_path.name.startswith("idea-")
+    assert task_path.name.startswith("task-")
+    assert executor.commands == [
+        (
+            "millrace",
+            "queue",
+            "add-probe",
+            str(probe_path),
+            "--workspace",
+            str(tmp_path),
+        ),
+        (
+            "millrace",
+            "queue",
+            "add-idea",
+            str(idea_path),
+            "--workspace",
+            str(tmp_path),
+        ),
+        (
+            "millrace",
+            "queue",
+            "add-task",
+            str(task_path),
+            "--workspace",
+            str(tmp_path),
+        ),
+    ]
 
 
 def test_controller_uses_default_pi_mode_for_daemon() -> None:

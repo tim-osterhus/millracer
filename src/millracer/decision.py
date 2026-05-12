@@ -15,6 +15,8 @@ class Decision:
     mode: str = "default_pi"
     custom_loop_needed: bool = False
     notes: str = ""
+    intake_kind: str | None = None
+    signals: tuple[str, ...] = ()
 
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(?P<body>\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
@@ -37,6 +39,8 @@ def parse_decision(raw: str) -> Decision:
             mode=mode,
             custom_loop_needed=bool(payload.get("custom_loop_needed", False)),
             notes=str(payload.get("notes") or "").strip(),
+            intake_kind=_normalize_intake_kind(payload.get("intake_kind")),
+            signals=_normalize_signals(payload.get("signals")),
         )
 
     route_match = _ROUTE_LINE.search(raw)
@@ -69,3 +73,21 @@ def _normalize_route(value: object) -> str:
     if route not in {"direct", "millrace"}:
         return "direct"
     return route
+
+
+def _normalize_intake_kind(value: object) -> str | None:
+    intake_kind = str(value or "").strip().lower()
+    if intake_kind not in {"probe", "idea", "task"}:
+        return None
+    return intake_kind
+
+
+def _normalize_signals(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    signals: list[str] = []
+    for item in value:
+        signal = str(item or "").strip()
+        if signal:
+            signals.append(signal)
+    return tuple(signals)

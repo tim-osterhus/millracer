@@ -69,6 +69,45 @@ def test_classify_status_detects_running_daemon_with_drained_work() -> None:
     )
 
 
+def test_classify_status_treats_updater_complete_with_remaining_work_as_progress() -> None:
+    event = classify_status(
+        {
+            "workspace": "/tmp/ws",
+            "process_running": True,
+            "active_stage": "none",
+            "active_run_count": 0,
+            "execution_queue_depth": 0,
+            "planning_queue_depth": 1,
+            "learning_queue_depth": 0,
+            "execution_status_marker": "### UPDATE_COMPLETE",
+        }
+    )
+
+    assert event == MonitorEvent(
+        kind="stage_progress",
+        workspace="/tmp/ws",
+        reason="updater update complete",
+    )
+
+
+def test_classify_status_suppresses_progress_when_terminal_stage_notifications_disabled() -> None:
+    event = classify_status(
+        {
+            "workspace": "/tmp/ws",
+            "process_running": True,
+            "active_stage": "none",
+            "active_run_count": 0,
+            "execution_queue_depth": 0,
+            "planning_queue_depth": 1,
+            "learning_queue_depth": 0,
+            "execution_status_marker": "### UPDATE_COMPLETE",
+        },
+        notify_terminal_stages=False,
+    )
+
+    assert event is None
+
+
 def test_classify_status_detects_stopped_daemon_with_queued_work() -> None:
     event = classify_status(
         {
@@ -104,3 +143,47 @@ def test_monitor_wait_returns_first_terminal_event() -> None:
     )
 
     assert monitor.wait(timeout_seconds=1).kind == "arbiter_complete"
+
+
+def test_monitor_suppresses_duplicate_progress_events() -> None:
+    statuses = iter(
+        [
+            {
+                "workspace": "/tmp/ws",
+                "process_running": True,
+                "active_stage": "none",
+                "active_run_count": 0,
+                "execution_queue_depth": 0,
+                "planning_queue_depth": 1,
+                "learning_queue_depth": 0,
+                "execution_status_marker": "### UPDATE_COMPLETE",
+            },
+            {
+                "workspace": "/tmp/ws",
+                "process_running": True,
+                "active_stage": "none",
+                "active_run_count": 0,
+                "execution_queue_depth": 0,
+                "planning_queue_depth": 1,
+                "learning_queue_depth": 0,
+                "execution_status_marker": "### UPDATE_COMPLETE",
+            },
+            {
+                "workspace": "/tmp/ws",
+                "process_running": True,
+                "active_stage": "none",
+                "active_run_count": 0,
+                "execution_queue_depth": 0,
+                "planning_queue_depth": 0,
+                "learning_queue_depth": 0,
+            },
+        ]
+    )
+    monitor = DaemonMonitor(
+        status_loader=lambda: next(statuses),
+        poll_interval_seconds=0.0,
+        sleep=lambda _: None,
+    )
+
+    assert monitor.wait(timeout_seconds=1).kind == "stage_progress"
+    assert monitor.wait(timeout_seconds=1).kind == "complete"

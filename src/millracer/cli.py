@@ -31,7 +31,8 @@ def main(argv: list[str] | None = None) -> int:
 def _run_once(args: argparse.Namespace) -> int:
     pi = None
     try:
-        task, workspace, scoped_work_item = _task_workspace_and_scope(args)
+        task, workspace, scoped_work_item, request_intake = _task_workspace_and_scope(args)
+        intake = args.intake if args.intake != "auto" else request_intake or args.intake
         cwd = Path(args.cwd or workspace).expanduser().resolve()
         workspace = workspace.expanduser().resolve()
         pi, agent = _build_agent(args, workspace=workspace, cwd=cwd)
@@ -46,6 +47,8 @@ def _run_once(args: argparse.Namespace) -> int:
                 keep_daemon=args.keep_daemon,
                 scoped_work_item=scoped_work_item,
                 max_daemon_restarts=args.max_daemon_restarts,
+                intake=intake,
+                notify_terminal_stages=args.notify_terminal_stages,
             ),
         )
     except Exception as exc:  # pragma: no cover - user-facing CLI boundary
@@ -79,6 +82,8 @@ def _run_operator(args: argparse.Namespace) -> int:
             pi_timeout_seconds=args.pi_timeout_seconds,
             keep_daemon=args.keep_daemon,
             max_daemon_restarts=args.max_daemon_restarts,
+            intake=args.intake,
+            notify_terminal_stages=args.notify_terminal_stages,
         )
         print("Millracer operator ready. Type /exit to quit.", file=sys.stderr)
         while True:
@@ -133,6 +138,7 @@ def _build_agent(
     monitor = DaemonMonitor(
         status_loader=millrace.status,
         poll_interval_seconds=args.poll_interval_seconds,
+        notify_terminal_stages=args.notify_terminal_stages,
     )
     return pi, MillracerAgent(pi=pi, millrace=millrace, monitor=monitor)
 
@@ -157,6 +163,7 @@ def _add_common_options(command: argparse.ArgumentParser) -> None:
         help="Working directory for Pi and Millrace commands.",
     )
     command.add_argument("--route", choices=("auto", "direct", "millrace"), default="auto")
+    command.add_argument("--intake", choices=("auto", "probe", "idea", "task"), default="auto")
     command.add_argument("--pi-command", default="pi")
     command.add_argument("--millrace-command", default="millrace")
     command.add_argument("--provider", default=None)
@@ -170,6 +177,12 @@ def _add_common_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--max-daemon-restarts", type=int, default=1)
     command.add_argument("--pi-timeout-seconds", type=int, default=None)
     command.add_argument("--keep-daemon", action="store_true")
+    command.add_argument(
+        "--notify-terminal-stages",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Notify the outer Pi session when terminal Millrace stages finish.",
+    )
 
 
 def _add_operator_parser(subparsers) -> None:
@@ -185,7 +198,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--benchmark-json",
         action="store_true",
-        help="Read benchmark request JSON from stdin.",
+        help="Read external request JSON from stdin.",
     )
     _add_common_options(run)
     run.add_argument("--pi-session", choices=("rpc", "print"), default="rpc")
@@ -194,17 +207,19 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _task_workspace_and_scope(args: argparse.Namespace) -> tuple[str, Path, ScopedWorkItem | None]:
+def _task_workspace_and_scope(
+    args: argparse.Namespace,
+) -> tuple[str, Path, ScopedWorkItem | None, str | None]:
     if args.benchmark_json:
         request = parse_benchmark_request(sys.stdin.read())
         workspace = request.workspace or args.workspace
-        return request.task, workspace, request.scoped_work_item
+        return request.task, workspace, request.scoped_work_item, request.intake_kind
     task = " ".join(args.task).strip()
     if not task:
         task = sys.stdin.read().strip()
     if not task:
         raise ValueError("task text is required")
-    return task, args.workspace, None
+    return task, args.workspace, None, None
 
 
 if __name__ == "__main__":  # pragma: no cover
