@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from millracer.agent import MillracerAgent, RunOptions
@@ -11,9 +13,20 @@ from millracer.benchmark import parse_benchmark_request, render_benchmark_result
 from millracer.millrace import MillraceConfig, MillraceController
 from millracer.monitor import DaemonMonitor
 from millracer.operator import MillracerOperator
+from millracer.ops_models import (
+    SCHEMA_VERSION,
+    Completion,
+    ErrorRecord,
+    OpsResult,
+    parse_ops_request,
+    render_ops_result,
+)
+from millracer.ops_service import OpsService
 from millracer.pi import PiConfig, PiHarness, discover_default_skill_paths
 from millracer.pi_rpc import PiRpcHarness
 from millracer.scope import ScopedWorkItem
+from millracer.sessions import SessionStore
+from millracer.workspaces import WorkspaceRecord, WorkspaceRegistry
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_once(args)
     if args.command == "operator":
         return _run_operator(args)
+    if args.command == "ops":
+        return _run_ops(args)
     else:
         parser.print_help()
         return 2
@@ -107,6 +122,29 @@ def _run_operator(args: argparse.Namespace) -> int:
         _close_if_needed(pi)
 
 
+def _run_ops(args: argparse.Namespace) -> int:
+    close_candidates: list[object] = []
+    if not args.json and not args.stream_json:
+        print("millracer: error: ops requires --json or --stream-json", file=sys.stderr)
+        return 2
+    try:
+        request = parse_ops_request(sys.stdin.read())
+        if args.stream_json:
+            result = _unsupported_stream_result(request)
+        else:
+            service = _build_ops_service(args, close_candidates=close_candidates)
+            result = service.handle(request)
+    except Exception as exc:  # pragma: no cover - user-facing CLI boundary
+        print(f"millracer: error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        for candidate in close_candidates:
+            _close_if_needed(candidate)
+
+    print(json.dumps(render_ops_result(result), indent=2, sort_keys=True))
+    return 1 if result.status == "failed" else 0
+
+
 def _build_agent(
     args: argparse.Namespace,
     *,
@@ -141,6 +179,66 @@ def _build_agent(
         notify_terminal_stages=args.notify_terminal_stages,
     )
     return pi, MillracerAgent(pi=pi, millrace=millrace, monitor=monitor)
+
+
+def _build_ops_service(
+    args: argparse.Namespace,
+    *,
+    close_candidates: list[object],
+) -> OpsService:
+    skill_paths = tuple(Path(path).expanduser().resolve() for path in args.skill)
+    if not skill_paths and not args.no_default_skills:
+        skill_paths = discover_default_skill_paths()
+
+    def runtime_factory(resolution):
+        workspace = resolution.root_path or args.workspace.expanduser().resolve()
+        cwd_candidate = Path(args.cwd).expanduser().resolve() if args.cwd else workspace
+        cwd = cwd_candidate if cwd_candidate.exists() else Path.cwd()
+        mode = resolution.mode or args.millrace_mode
+        return MillraceController(
+            config=MillraceConfig(command=args.millrace_command, mode=mode),
+            workspace=workspace,
+            cwd=cwd,
+        )
+
+    def agent_factory(runtime, runner, monitor):  # noqa: ANN001
+        config = PiConfig(
+            command=args.pi_command,
+            provider=args.provider,
+            model=args.model,
+            thinking=args.thinking,
+            skill_paths=skill_paths,
+        )
+        pi = PiRpcHarness(config=config)
+        close_candidates.append(pi)
+        daemon_monitor = DaemonMonitor(
+            status_loader=runtime.status,
+            poll_interval_seconds=args.poll_interval_seconds,
+            notify_terminal_stages=args.notify_terminal_stages,
+        )
+        return MillracerAgent(pi=pi, millrace=runtime, monitor=daemon_monitor)
+
+    workspace = args.workspace.expanduser().resolve()
+    registry = WorkspaceRegistry(
+        records={
+            "default": WorkspaceRecord(
+                workspace_id="default",
+                root_path=workspace,
+                display_name=workspace.name or str(workspace),
+                default_mode=args.millrace_mode,
+            )
+        },
+        default_workspace_id="default",
+    )
+    return OpsService(
+        runtime_factory=runtime_factory,
+        runner=None,
+        agent_factory=agent_factory,
+        registry=registry,
+        session_store=SessionStore(path=Path.home() / ".millracer" / "sessions.json"),
+        cli_workspace=workspace,
+        cwd=Path(args.cwd).expanduser().resolve() if args.cwd else None,
+    )
 
 
 def _close_if_needed(candidate: object) -> None:
@@ -190,6 +288,17 @@ def _add_operator_parser(subparsers) -> None:
     _add_common_options(operator)
 
 
+def _add_ops_parser(subparsers) -> None:
+    ops = subparsers.add_parser("ops", help="Run one typed Millracer ops request.")
+    ops.add_argument("--json", action="store_true", help="Read OpsRequest JSON from stdin.")
+    ops.add_argument(
+        "--stream-json",
+        action="store_true",
+        help="Read OpsRequest JSON from stdin and emit stream frames when supported.",
+    )
+    _add_common_options(ops)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="millracer")
     subparsers = parser.add_subparsers(dest="command")
@@ -204,6 +313,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--pi-session", choices=("rpc", "print"), default="rpc")
     run.add_argument("--output", choices=("text", "json"), default="text")
     _add_operator_parser(subparsers)
+    _add_ops_parser(subparsers)
     return parser
 
 
@@ -220,6 +330,34 @@ def _task_workspace_and_scope(
     if not task:
         raise ValueError("task text is required")
     return task, args.workspace, None, None
+
+
+def _unsupported_stream_result(request) -> OpsResult:  # noqa: ANN001
+    now = datetime.now(UTC).isoformat()
+    return OpsResult(
+        schema_version=SCHEMA_VERSION,
+        request_id=request.request_id,
+        status="failed",
+        action=request.action,
+        workspace_ref=request.workspace_ref,
+        started_at=now,
+        finished_at=now,
+        warnings=(),
+        errors=(
+            ErrorRecord(
+                code="unsupported_transport",
+                message="Streaming ops JSON is not implemented in this Millracer version.",
+                recoverable=True,
+                suggested_action="Use millracer ops --json.",
+            ),
+        ),
+        result={},
+        completion=Completion(
+            outcome="unknown",
+            scoped_completion=False,
+            verification_status="unverified",
+        ),
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

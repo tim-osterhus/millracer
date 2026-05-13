@@ -1,22 +1,26 @@
 # Millracer
 
-Millracer is a Pi-backed Millrace operator harness. It keeps a persistent outer
-Pi RPC session, injects Millrace-aware operator instructions, and can either
-work directly or delegate substantial work into Millrace.
+Millracer is the local ops gateway for Millrace OS. It turns CLI, Mission
+Control, channel adapter, agent, and future API/MCP requests into typed
+Millrace runtime actions with structured evidence, warnings, and recovery
+behavior.
 
-Millracer is meant to be usable in two ways:
+Millracer is meant to be usable in three ways:
 
+- as a typed JSON ops boundary for software callers
 - as a persistent operator you can talk to directly
-- as a one-shot command that external automation can call
+- as a one-shot natural-language command that external automation can call
 
 ## Requirements
 
 Install these first:
 
 - Python 3.11 or newer
-- `pi` on `PATH`
 - `millrace` on `PATH`
-- model/API credentials configured for Pi
+- `pi` on `PATH` when using natural-language direct work or delegated
+  finalization
+- model/API credentials configured for the selected runner backend when a
+  runner is used
 
 For local development, install `uv` as well.
 
@@ -120,9 +124,61 @@ decision turn and the finalization turn share one Pi conversation. For
 compatibility debugging, `--pi-session print` uses one fresh `pi --print`
 process per Pi turn.
 
-## External JSON
+## Ops JSON
 
-For external callers, pass task input as JSON on stdin:
+Use `ops --json` when Mission Control, a channel adapter, or another software
+caller needs the stable Millrace OS command boundary:
+
+```bash
+millracer ops --json < request.json
+```
+
+The request and result use schema version `millracer.ops.v0.2`:
+
+```json
+{
+  "schema_version": "millracer.ops.v0.2",
+  "request_id": "req-001",
+  "workspace_ref": {
+    "root_path": "/path/to/workspace",
+    "mode": "learning_codex"
+  },
+  "source": {
+    "kind": "mission_control",
+    "surface": "command_panel"
+  },
+  "action": "status",
+  "input": {
+    "kind": "structured_action",
+    "payload": {}
+  }
+}
+```
+
+Current structured actions include `status`, `enqueue`, `list_workspaces`,
+`select_workspace`, `list_sessions`, and `inspect_session`. Unsupported actions
+return machine-readable errors instead of falling through to arbitrary shell
+execution.
+
+`OpsResult` includes structured `warnings`, `errors`, `result`, and
+`completion` fields. Runtime completion is never inferred from text alone. For
+scoped delegated work, callers should gate external completion on:
+
+```json
+{
+  "completion": {
+    "scoped_completion": true
+  }
+}
+```
+
+`--stream-json` is reserved for event-frame streaming and currently returns a
+structured `unsupported_transport` result.
+
+## Legacy JSON
+
+For callers still using the earlier one-shot compatibility shape, pass task
+input as JSON on stdin:
 
 ```bash
 printf '{"task":"Fix the project and run the tests","workspace":"/path/to/workspace"}' \
@@ -131,10 +187,13 @@ printf '{"task":"Fix the project and run the tests","workspace":"/path/to/worksp
 
 The JSON input accepts `task`, `prompt`, or `instructions`, plus an optional
 `workspace` and optional `intake_kind`. The option name is still
-`--benchmark-json` for CLI compatibility. The JSON output includes the selected
-route, intake kind, decision metadata, warnings, Millrace event data, intake
-document path, status payload, progress events, final outcome, scoped
-completion flag, completion evidence, and final answer.
+`--benchmark-json` for CLI compatibility. New product integrations should use
+`millracer ops --json`.
+
+The legacy JSON output includes the selected route, intake kind, decision
+metadata, warnings, Millrace event data, intake document path, status payload,
+progress events, final outcome, scoped completion flag, completion evidence,
+and final answer.
 
 Adapters for streaming queues should pass exactly one selected item at a time
 using `scoped_work_item`:
@@ -227,31 +286,44 @@ millracer operator \
 
 Millracer keeps the outer interface simple:
 
-1. receive one task
-2. ask Pi whether the task should stay direct or enter Millrace, and which
-   intake kind fits delegated work
-3. run direct work through Pi when Millrace is unnecessary
-4. enqueue probe, idea, or task documents into Millrace when durable staged
+1. receive a typed ops request or one natural-language task
+2. resolve workspace and mode
+3. dispatch structured actions directly when no model interpretation is needed
+4. use a runner backend for natural-language routing or direct work when needed
+5. enqueue probe, idea, or task documents into Millrace when durable staged
    execution is useful
-5. notify Pi about meaningful terminal-stage progress while monitoring
-6. inject terminal daemon events back into Pi for final inspection
+6. monitor runtime state and synthesize evidence-bearing results
 
 The goal is a dedicated Millrace-equipped operator that is still easy to drive
-from automation. External callers can use one-shot `run`; humans and longer
-operator sessions can use persistent `operator`.
+from automation. Product surfaces should use `ops --json`; external
+compatibility callers can use one-shot `run`; humans and longer operator
+sessions can use persistent `operator`.
 
 By default, Millracer uses:
 
-- `pi` as the outer harness
 - `millrace` as the runtime CLI
 - `default_pi` as the Millrace mode for delegated work
-- `high` Pi thinking for the outer agent
-- a persistent Pi RPC session for the full Millracer run
+- `pi` as the current runner backend when model-backed interpretation or
+  finalization is needed
+- `high` thinking for that runner
+- a persistent Pi RPC session for natural-language `run` and `operator`
+  workflows
 
 The automatic decision turn can flag that a custom Millrace loop appears
 necessary. Millracer preserves that signal in JSON output and emits a text-mode
 warning, but it still delegates with the selected `--millrace-mode`. Pass a
 custom mode explicitly when one is available.
+
+## Workspace And Sessions
+
+`OpsRequest.workspace_ref` can identify a workspace by `workspace_id` or
+`root_path`. Resolution prefers request fields, then CLI workspace defaults,
+then selected/default session context when available.
+
+Millracer may persist operator session convenience state such as selected
+workspace, selected mode, recent request IDs, and warning codes. It does not
+persist queue truth, work-item lifecycle truth, traces, artifacts, approvals, or
+terminal outcomes as session state. The Millrace runtime remains authoritative.
 
 ## Routes
 

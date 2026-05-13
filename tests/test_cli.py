@@ -25,3 +25,17 @@ def test_operator_parser_accepts_intake() -> None:
 
     assert args.intake == "idea"
     assert args.notify_terminal_stages is True
+
+
+def test_ops_parser_accepts_json_mode() -> None:
+    args = _parser().parse_args(["ops", "--json"])
+
+    assert args.command == "ops"
+    assert args.json is True
+
+
+def test_ops_parser_accepts_stream_json_flag() -> None:
+    args = _parser().parse_args(["ops", "--stream-json"])
+
+    assert args.command == "ops"
+    assert args.stream_json is True

@@ -6,9 +6,18 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from millracer.agent import RunResult
 from millracer.intake import normalize_intake_kind
+from millracer.ops_models import (
+    SCHEMA_VERSION,
+    OpsRequest,
+    OpsResult,
+    SourceRef,
+    WorkspaceRef,
+    render_ops_result,
+)
 from millracer.scope import ScopedWorkItem
 
 
@@ -53,3 +62,31 @@ def parse_benchmark_request(raw: str) -> BenchmarkRequest:
 
 def render_benchmark_result(result: RunResult) -> str:
     return json.dumps(result.to_jsonable(), indent=2, sort_keys=True)
+
+
+def parse_legacy_request_as_ops(raw: str, *, request_id: str | None = None) -> OpsRequest:
+    payload = json.loads(raw)
+    request = parse_benchmark_request(raw)
+    metadata = dict(request.metadata)
+    metadata["legacy_request"] = payload if isinstance(payload, dict) else {}
+    return OpsRequest(
+        schema_version=SCHEMA_VERSION,
+        request_id=request_id or f"req-legacy-{uuid4()}",
+        action="enqueue",
+        workspace_ref=WorkspaceRef(
+            root_path=None if request.workspace is None else str(request.workspace),
+        ),
+        source=SourceRef(kind="benchmark_compat"),
+        input={
+            "kind": "legacy_benchmark",
+            "text": request.task,
+        },
+        route_preference="millrace",
+        intake_preference=request.intake_kind or "auto",
+        scoped_work_item=request.scoped_work_item,
+        metadata=metadata,
+    )
+
+
+def ops_result_to_legacy_json(result: OpsResult) -> str:
+    return json.dumps(render_ops_result(result), indent=2, sort_keys=True)
